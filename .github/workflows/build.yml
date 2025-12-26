@@ -6,6 +6,7 @@ on:
       - main
 
 jobs:
+  # 빌드 및 ECR 푸시만 수행합니다.
   build-and-push:
     runs-on: intellisia-runner 
     steps:
@@ -31,27 +32,3 @@ jobs:
           docker push $ECR_REGISTRY/$REPO_NAME:${{ github.sha }}
           docker tag $ECR_REGISTRY/$REPO_NAME:${{ github.sha }} $ECR_REGISTRY/$REPO_NAME:latest
           docker push $ECR_REGISTRY/$REPO_NAME:latest
-
-  deploy:
-    runs-on: intellisia-runner
-    needs: build-and-push 
-    steps:
-      - name: SSH into EC2 and run Docker container
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_PRIVATE_KEY }}
-          script: |
-            # EC2 내부에서도 동일한 리전 정보를 명시합니다.
-            aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin 745173969277.dkr.ecr.ap-northeast-2.amazonaws.com
-            
-            docker pull 745173969277.dkr.ecr.ap-northeast-2.amazonaws.com/intellisia-main-app:latest
-            docker stop my-container || true
-            docker rm my-container || true
-            
-            docker run -d \
-              --name my-container \
-              -p 3000:3000 \
-              -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
-              745173969277.dkr.ecr.ap-northeast-2.amazonaws.com/intellisia-main-app:latest
