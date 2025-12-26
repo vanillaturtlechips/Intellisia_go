@@ -24,18 +24,19 @@ on:
 
 jobs:
   deploy-to-argocd:
-    runs-on: ubuntu-latest
+    runs-on: intellisia-runner
 
     steps:
       - name: Checkout ArgoCD Apps Repository
         uses: actions/checkout@v4
         with:
-          repository: GRPC-OK/argocd-apps
+          repository: <사용자_아이디>/argocd-apps 
           token: ${{ secrets.INTELLISIA_GITHUB_TOKEN }}
           path: argocd-apps
 
       - name: Apply Helm Values from backend
         run: |
+          # [참고] ARC 러너 이미지에는 jq가 기본 설치되어 있습니다.
           PROJECT_DIR="argocd-apps/helm-projects/${{ inputs.projectName }}"
           mkdir -p "$PROJECT_DIR"
           echo '${{ inputs.helmValues }}' | jq '.' > "$PROJECT_DIR/values.yaml"
@@ -45,17 +46,13 @@ jobs:
           cd argocd-apps
           git config user.name "Intellisia Deploy Bot"
           git config user.email "deploy-bot@intellisia.com"
-          git add helm-projects/${{ inputs.projectName }}/values.yaml
+          git add .
           git commit -m "Deploy ${{ inputs.projectName }} version ${{ inputs.imageTag }}"
           git push origin main
 
       - name: Update Deployment Status to Backend
         if: always()
         run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            STATUS="success"
-          else
-            STATUS="fail"
-          fi
-
+          # status 판단 로직
+          STATUS="${{ job.status }}"
           curl -X POST "${{ inputs.callbackUrl }}?status=$STATUS"
