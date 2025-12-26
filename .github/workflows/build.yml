@@ -6,16 +6,18 @@ on:
       - main
 
 jobs:
-  # 1. 빌드 및 푸시 작업
   build-and-push:
     runs-on: intellisia-runner 
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
-          
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -30,7 +32,6 @@ jobs:
           docker tag $ECR_REGISTRY/$REPO_NAME:${{ github.sha }} $ECR_REGISTRY/$REPO_NAME:latest
           docker push $ECR_REGISTRY/$REPO_NAME:latest
 
-  # 2. 배포 작업
   deploy:
     runs-on: intellisia-runner
     needs: build-and-push 
@@ -42,7 +43,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_PRIVATE_KEY }}
           script: |
-            # EC2 내부 로그인을 위해 리전을 명시합니다.
+            # EC2 내부에서도 동일한 리전 정보를 명시합니다.
             aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin 745173969277.dkr.ecr.ap-northeast-2.amazonaws.com
             
             docker pull 745173969277.dkr.ecr.ap-northeast-2.amazonaws.com/intellisia-main-app:latest

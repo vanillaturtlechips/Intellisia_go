@@ -3,14 +3,15 @@ name: Run Image Build and Scan
 on:
   workflow_dispatch:
     inputs:
-      versionId:
-        required: true
-      repo:
-        required: true
-      ref:
-        required: true
-      baseUrl:
-        required: true  
+      versionId: { required: true }
+      repo: { required: true }
+      ref: { required: true }
+      baseUrl: { required: true }  
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 745173969277.dkr.ecr.ap-northeast-2.amazonaws.com
+  REPO_NAME: intellisia-main-app
 
 jobs:
   image-build-and-scan:
@@ -30,14 +31,25 @@ jobs:
           cd target-repo
           echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
+      - name: Build Docker image (Local)
         id: build-local
         run: |
           cd target-repo
-          IMAGE_TAG="local-my-app:${{ steps.commit.outputs.COMMIT_HASH }}"
+          IMAGE_TAG="${{ env.ECR_REGISTRY }}/${{ env.REPO_NAME }}:${{ steps.commit.outputs.COMMIT_HASH }}"
           if docker build -t "$IMAGE_TAG" .; then
             echo "status=success" >> $GITHUB_OUTPUT
             echo "local_image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
@@ -45,7 +57,7 @@ jobs:
             echo "status=fail" >> $GITHUB_OUTPUT
           fi
 
-      - name: Run Trivy vulnerability scan and generate SARIF
+      - name: Run Trivy vulnerability scan
         if: success() && steps.build-local.outputs.status == 'success'
         id: trivy_scan
         uses: aquasecurity/trivy-action@master
@@ -54,27 +66,18 @@ jobs:
           format: 'sarif'
           output: 'trivy-results.sarif'
 
-      - name: Login to Docker Hub
-        if: success() && steps.build-local.outputs.status == 'success'
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Push Docker image to Docker Hub
+      - name: Push Docker image to ECR
         if: success() && steps.trivy_scan.outcome == 'success'
-        id: push-to-hub
+        id: push-to-ecr
         run: |
-          IMAGE_TAG_ONLY="${{ steps.commit.outputs.COMMIT_HASH }}"
-          FULL_TAG="seaproject/my-app:$IMAGE_TAG_ONLY"
+          FULL_TAG="${{ steps.build-local.outputs.local_image_tag }}"
+          LATEST_TAG="${{ env.ECR_REGISTRY }}/${{ env.REPO_NAME }}:latest"
 
-          docker tag "${{ steps.build-local.outputs.local_image_tag }}" "$FULL_TAG"
+          docker tag "$FULL_TAG" "$LATEST_TAG"
 
           if docker push "$FULL_TAG"; then
-            docker tag "$FULL_TAG" "seaproject/my-app:latest"
-            docker push "seaproject/my-app:latest"
+            docker push "$LATEST_TAG"
             echo "status=success" >> $GITHUB_OUTPUT
-            echo "image_tag=$IMAGE_TAG_ONLY" >> $GITHUB_OUTPUT
           else
             echo "status=fail" >> $GITHUB_OUTPUT
           fi
@@ -83,27 +86,18 @@ jobs:
         if: always()
         run: |
           CALLBACK_URL="${{ github.event.inputs.baseUrl }}/api/versions/${{ github.event.inputs.versionId }}/image-build/callback_build"
-          IMAGE_TAG="${{ steps.push-to-hub.outputs.image_tag }}"
-          if [ "${{ steps.build-local.outputs.status }}" = "success" ]; then
+          IMAGE_TAG="${{ steps.commit.outputs.COMMIT_HASH }}"
+          if [ "${{ steps.push-to-ecr.outputs.status }}" = "success" ]; then
             curl -X POST "$CALLBACK_URL?versionId=${{ github.event.inputs.versionId }}&status=success&imageTag=$IMAGE_TAG"
           else
             curl -X POST "$CALLBACK_URL?versionId=${{ github.event.inputs.versionId }}&status=fail"
           fi
-
-      - name: Configure AWS Credentials
-        if: always()
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Upload Trivy Results to S3 and Notify Backend
         if: always()
         run: |
           VERSION_ID="${{ github.event.inputs.versionId }}"
           BUCKET="${{ secrets.S3_BUCKET_NAME }}"
-          REGION="${{ secrets.AWS_REGION }}"
           IMAGE_ANALYSIS_CALLBACK_URL="${{ github.event.inputs.baseUrl }}/api/versions/${VERSION_ID}/image-analysis/callback_analysis"
 
           TRIVY_FILE="trivy-results.sarif"
@@ -113,11 +107,8 @@ jobs:
 
           if [ -f "$TRIVY_FILE" ]; then
             aws s3 cp "$TRIVY_FILE" "s3://$BUCKET/$TARGET_PATH"
-            PUBLIC_URL="https://$BUCKET.s3.$REGION.amazonaws.com/$TARGET_PATH"
-            echo "Uploaded Trivy report: $PUBLIC_URL"
+            PUBLIC_URL="https://$BUCKET.s3.${{ env.AWS_REGION }}.amazonaws.com/$TARGET_PATH"
             SCAN_STATUS="success"
-          else
-            echo "Trivy results file not found, assuming scan failure."
           fi
 
           curl -X POST "$IMAGE_ANALYSIS_CALLBACK_URL" \
